@@ -1,0 +1,23 @@
+[package]
+name = "velvet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core_affinity = "0.8.1"
+crossbeam-deque = { version = "0.8.6", optional = true}
+syn = { version = "2.0", features = ["full", "visit-mut"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+prettyplease = "0.2"
+velvet_macros = { path = "../velvet_macros" }
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = ["safe"]
+safe = []
+crossbeam = ["dep:crossbeam-deque"]
+unsafe = []
+stats = ["velvet_macros/stats"]
