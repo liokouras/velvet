@@ -6,26 +6,19 @@ Velvet is a Rust library for ergonomic, efficient **divide-and-conquer paralleli
 ---
 
 ## Features
-- **Declarative parallelism via `#[spawnable]` macro** 
-Annotate recursive functions with `#[spawnable]` to automatically generate parallel execution code, without manual thread management.
-- **Dynamic load balancing via work stealing**
-Tasks are dynamically distributed to idle workers via work-stealing. In divide-and-conquer workloads, large tasks are created, and stolen, first, while finer-grained tasks are created later and are less likely to be stolen. This makes work-stealing especially efficient and reduces load-balancing overhead.
-- **Automatic synchronization and scheduling**
-Spawned tasks are synchronized automatically; no need for manual synchronization or barriers.
-- **Configurable worker pools with thread pinning**
-Control the number of worker threads and optionally pin them to specific CPU cores for predictable performance.
-- **Multiple work queue backends**
-Three queue backends are supported: safe (default), Crossbeam, and unsafe. It is easy to experiment with diffent backends and add your own.
-- **Lightweight, compile-time code generation**
-Parallelized code is generated at compile time via standard Rust metaprogramming features, keeping runtime overhead minimal.
-- **Shared‑memory only**
-Designed for parallelism on multi-core systems; Velvet does not provide a distributed runtime (...yet!)  
+- **Declarative parallelism via `#[spawnable]` macro** : Annotate recursive functions with `#[spawnable]` to automatically generate parallel execution code, without manual thread management.
+- **Dynamic load balancing via work stealing**: Tasks are dynamically distributed to idle workers via work-stealing. In divide-and-conquer workloads, large tasks are created, and stolen, first, while finer-grained tasks are created later and are less likely to be stolen. This makes work-stealing especially efficient and reduces load-balancing overhead.
+- **Automatic synchronization and scheduling**: Spawned tasks are synchronized automatically; no need for manual synchronization or barriers.
+- **Configurable worker pools with thread pinning**: Control the number of worker threads and optionally pin them to specific CPU cores for predictable performance.
+- **Multiple work queue backends**: Three queue backends are supported: safe (default), Crossbeam, and unsafe. It is easy to experiment with diffent backends and add your own.
+- **Lightweight, compile-time code generation**: Parallelized code is generated at compile time via standard Rust metaprogramming features, keeping runtime overhead minimal.
+- **Shared‑memory only**: Designed for parallelism on multi-core systems; Velvet does not provide a distributed runtime (...yet!)  
 
 ---
 
 ## Setup
 
-*Before you begin, ensure that both Rust and Cargo are installed on your system.* [TODO LINK]
+*Before you begin, ensure that [both Rust and Cargo are installed](https://rust-lang.org/tools/install/) on your system.*
 
 ### 1. Add Velvet to your Cargo manifest
 Add Velvet as both **build dependency** and **dev dependency**:
@@ -101,11 +94,11 @@ Both `spawnable` and `velvet_main` macros are exposed through Velvet's prelude. 
 The function annotated with `velvet_main` serves as the entry point for parallel execution. This is where Velvet creates and manages the thread pool for spawned tasks.
 As a result:
 - Each Velvet application should have at most one `velvet_main` function, unless you explicitly want to create multiple independent thread pools.
-- All top-level calls to spawnable functions must originate from the same `velvet_main` function. However, this is likely to change with the introduction of a `spawn!()` macro for more developer control (see Notes for Future Features [TODO LINK])
+- All top-level calls to spawnable functions must originate from the same `velvet_main` function. However, this is likely to change with the introduction of a `spawn!()` macro for more developer control (see [Notes for Future Features](#notes-for-future-features))
 
 #### 2. **Arguments & Return Types**
-To uphold thread-safety, all arguments and return values to/from spawnable functions must be `Send + 'static`. [TODO LINK]
-Non-`'static` references cannot be transferred between threads safely [TODO LINK], so Velvet treats `&T` in function signatures as if they were `Arc<T>` [TODO LINK] and will call `.clone()` when the value is passed to another thread. 
+To uphold thread-safety, all arguments and return values to/from spawnable functions must be [`Send + 'static`](https://doc.rust-lang.org/std/marker/trait.Send.html).
+Non-`'static` references cannot be transferred between threads safely, so Velvet treats `&T` in function signatures as if they were [`Arc<T>`](https://doc.rust-lang.org/std/sync/struct.Arc.html) and will call `.clone()` when the value is passed to another thread. 
 If your spawnable function passes values by reference, make sure the values are wrapped in an `Arc` (this does not require changes to the function signature, as Rust's *deref coercion* allows an `Arc<T>` to be used where a `&T` is expected.).
 If the datatype of an argument or return value is externally defined, ensure it is brought into scope using its **full qualified path** rather than relying on wildcard imports. This allows Velvet to resolve and generate code for the type correctly.
 
@@ -190,7 +183,7 @@ TODO !!
 
 ## License
 
-Apache 2.0, see LICENSE [TODO LINK]
+Apache 2.0, see [LICENSE](https://github.com/liokouras/velvet/blob/main/LICENSE)
 
 ---
 
