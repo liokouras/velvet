@@ -3,6 +3,6 @@ resolver = "2"
 
 members = [
     "velvet",
-    "velvet_examples",
+    "velvet_examples/adapint", "velvet_examples/fib", "velvet_examples/matmul", "velvet_examples/nqueens", "velvet_examples/tsp",
     "velvet_macros",
 ]

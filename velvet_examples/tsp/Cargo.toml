@@ -1,0 +1,18 @@
+[package]
+name = "tsp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9.0"
+velvet = { path = "../../velvet", default-features = false, optional = false  }
+
+[build-dependencies]
+velvet = { path = "../../velvet", default-features = false }
+
+[features]
+default = ["safe"]
+safe = ["velvet/safe"]
+crossbeam = ["velvet/crossbeam"]
+unsafe = ["velvet/unsafe"]
+stats = ["velvet/stats"]
