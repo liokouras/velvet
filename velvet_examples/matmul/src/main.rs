@@ -51,13 +51,14 @@ fn velvet_main(depth: usize, dim: usize) {
     let matrix_a = Arc::new(Matrix::new(depth, dim, 1.0, false));
     let matrix_b= Arc::new(Matrix::new(depth, dim, 2.0, false));
     let matrix_c = Arc::new(Matrix::new(depth, dim, 0.0, true));
+    let clone = matrix_c.clone();
 
     let start = Instant::now();
-    matrix_c.spawn_matmul(depth, &matrix_a, &matrix_b);
+    matrix_c.spawn_matmul(depth, matrix_a, matrix_b);
     let end = start.elapsed();
 
     let full_dim: usize = 2_usize.pow(depth.try_into().unwrap()) * dim;
-    let ok = matrix_c._check((full_dim * 2) as Real);
+    let ok = clone._check((full_dim * 2) as Real);
 
     println!("MATMUL({}x{}); OK = {} IN PARALLEL TIME: {}", full_dim, full_dim, ok, end.as_secs_f32());
     println!("Velvet queue backend: {} ; Sequential threshold = {}x{}", velvet_get_queue_name().as_str(), dim, dim);    

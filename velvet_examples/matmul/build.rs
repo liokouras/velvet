@@ -6,5 +6,5 @@ fn main() {
     velvet::generate(paths);
 
     println!("cargo::rerun-if-changed=build.rs");
-    println!("cargo::rerun-if-changed=./src/main.rs");
+    println!("cargo::rerun-if-changed=./src/matrix_par.rs");
 }

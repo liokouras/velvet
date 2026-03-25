@@ -87,27 +87,27 @@ impl Matrix {
 // matrix multiplicaiton
 impl Matrix {
     #[spawnable]
-    pub(crate) fn spawn_matmul(&self, task: usize, a: &Matrix, b: &Matrix) {
+    pub(crate) fn spawn_matmul(self: Arc<Self>, task: usize, a: Arc<Matrix>, b: Arc<Matrix>) {
         // threshold
         if task == 0 {
-            self.multiply_stride2(a, b);
+            self.multiply_stride2(&a, &b);
         } else {
-            match(a, b) {
+            match(&*a, &*b) {
                 (Matrix::Internal{_00: a00, _01: a01, _10: a10, _11: a11}, 
                 Matrix::Internal{_00: b00, _01: b01, _10: b10, _11: b11}) => {
-                    match self {
+                    match &*self {
                         Matrix::Internal{_00: c00, _01: c01, _10: c10, _11: c11} => {
-                            c00.spawn_matmul(task-1, a00, b00);
-                            c01.spawn_matmul(task-1, a00, b01);
+                            c00.clone().spawn_matmul(task-1, a00.clone(), b00.clone());
+                            c01.clone().spawn_matmul(task-1, a00.clone(), b01.clone());
 
-                            c10.spawn_matmul(task-1, a10, b00);
-                            c11.spawn_matmul(task-1, a10, b01);
+                            c10.clone().spawn_matmul(task-1, a10.clone(), b00.clone());
+                            c11.clone().spawn_matmul(task-1, a10.clone(), b01.clone());
 
-                            c00.spawn_matmul(task-1, a01, b10);
-                            c01.spawn_matmul(task-1, a01, b11);
+                            c00.clone().spawn_matmul(task-1, a01.clone(), b10.clone());
+                            c01.clone().spawn_matmul(task-1, a01.clone(), b11.clone());
 
-                            c10.spawn_matmul(task-1, a11, b10);
-                            c11.spawn_matmul(task-1, a11, b11);
+                            c10.clone().spawn_matmul(task-1, a11.clone(), b10.clone());
+                            c11.clone().spawn_matmul(task-1, a11.clone(), b11.clone());
                         },
                         _ => panic!("C-matrix is a leaf when it shouldn't be"),
                     }
