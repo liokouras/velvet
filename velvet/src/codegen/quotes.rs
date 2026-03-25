@@ -6,7 +6,7 @@ use super::func_finding::FuncEntry;
 /*
     input: Vec<FuncEntry> where there is one FuncEntry per function to account for.
     a FuncEntry carries a function's name, qualified path, argument list and return type (if any)
-    the argument list has already been augmented to change the 'self' type to an Arc<concrete-type>
+    the argument list has already been augmented to change the 'self' type to a fully qualified type
     for associated methods.
 
     output: TokenStream which defines the Frame enum with:
@@ -185,11 +185,7 @@ fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
                 for i in 1..func.args.len() {
                     let arg_name = syn::Ident::new(&format!("a{}", i), Span::call_site());
                     frame_args.push(quote!(#arg_name));
-                    if func.ref_args.contains(&i) {
-                        func_args.push(quote!(&#arg_name))
-                    } else {
-                        func_args.push(quote!(#arg_name))
-                    }
+                    func_args.push(quote!(#arg_name));
                 }
                 let frame_args_pattern = quote! { #(#frame_args),* };
                 let func_args_pattern = quote! { #(#func_args),* };
@@ -207,11 +203,7 @@ fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
                 for i in 0..func.args.len() {
                     let arg_name = syn::Ident::new(&format!("a{}", i), Span::call_site());
                     frame_args.push(quote!(#arg_name));
-                    if func.ref_args.contains(&i) {
-                        func_args.push(quote!(&#arg_name))
-                    } else {
-                        func_args.push(quote!(#arg_name))
-                    }
+                    func_args.push(quote!(#arg_name));
                 }
                 let frame_args_pattern = quote! { #(#frame_args),* };
                 let func_args_pattern = quote! { #(#func_args),* };

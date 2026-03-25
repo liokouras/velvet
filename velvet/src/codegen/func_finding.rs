@@ -1,7 +1,7 @@
 use std::{collections::HashMap, error::Error, fs, path::{Path as path, PathBuf}, process::exit};
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{self, Ident, Path, Signature, UseTree, visit_mut::{self, VisitMut}};
+use syn::{self, FnArg, Ident, Path, Signature, Type, UseTree, visit_mut::{self, VisitMut}};
 
 pub type FuncMetaData = (Option<String>, Signature, Path); // (Option<selftype>, Func Sig, func's qualified path)
 
@@ -11,7 +11,6 @@ pub struct FuncEntry {
     pub(super) args: Vec<TokenStream>,
     pub(super) ret: Option<TokenStream>,
     pub(super) has_selfarg: bool,
-    pub(super) ref_args: Vec<usize>, // positions of args which were rewritten to arcs
 }
 
 // visitor to collect spawnable function signatures in a file
@@ -51,7 +50,7 @@ impl VisitMut for FnVisitor {
 
     fn visit_item_impl_mut(&mut self, node: &mut syn::ItemImpl) {
         // if we are in an 'impl' block, keep track of what the selftype is
-        if let syn::Type::Path(type_path) = &*node.self_ty {
+        if let Type::Path(type_path) = &*node.self_ty {
             let selftype = type_path.path.segments.last().unwrap().ident.to_string();
             self.current_selftype = Some(selftype.clone());
             let full_path = format!("{}{}", self.qualified_path, selftype);
@@ -204,7 +203,7 @@ fn is_spawnable(attrs: &[syn::Attribute]) -> bool {
 fn is_self(ty: &syn::TypePath) -> bool {
     // qualified path like `<Self as Trait>::Assoc`
     if let Some(q) = &ty.qself {
-        if let syn::Type::Path(inner) = &*q.ty {
+        if let Type::Path(inner) = &*q.ty {
             if inner.qself.is_none() && inner.path.segments.len() == 1 && inner.path.segments[0].ident == "Self" {
                 return true;
             }
@@ -317,34 +316,43 @@ fn get_qualified_path(filepath: &path) -> Option<String> {
     reformat the FuncMetaData into a 'database' of TokenStreams to be used by the quotes module
     essentially: 
         - parses the signature into the components relevant for the quotes module
-        - renames any reference and self-parameters to Arc<type>,
+        - renames any self-parameters to their full qualified type
         - wraps return type in an Option
 */
 pub fn build_funcs_db(funcs: Vec<FuncMetaData> ) -> Vec<FuncEntry> {
     let mut database = Vec::new();
     for (selftype, sig, path) in funcs.into_iter() {
-        let mut ref_arg_pos = Vec::new();
         let has_selfarg = sig.receiver().is_some();
         let func_name = sig.ident;
 
         let arg_types: Vec<_> = sig.inputs.iter().enumerate().map(|(idx, arg)| {
-            if let syn::FnArg::Typed(pat_type) = arg {
-                let ty = &*pat_type.ty;
+            match arg {
+                FnArg::Typed(pat_type) => {
+                    let ty = &*pat_type.ty;
 
-                // re-write references to arc-types
-                if let syn::Type::Reference(syn::TypeReference { elem, .. }) = ty {
-                    ref_arg_pos.push(idx);
-                    quote! { std::sync::Arc<#elem> }
-                } else {
+                    if let Type::Reference(syn::TypeReference { .. }) = ty {
+                        let msg = format!("Reference arguments are not supported for Spawnable functions. Reference found in function {} at arg position {}", func_name, idx);
+                        println!("cargo:warning={}", msg);
+                        std::process::exit(1);
+                    }
                     quote!(#ty)
+                },
+                FnArg::Receiver(recv) => {
+                    let selftype =  selftype.as_ref().unwrap();
+                    let self_ty = syn::parse_str::<Type>(selftype).expect(&format!("Could not parse {} into a type", selftype));
+                    if recv.colon_token.is_some() {
+                        // want to full qualified type, but with actual selftype instead of 'self'
+                        let mut modified_self = *recv.ty.clone();
+                        ReplaceSelf { replacement: self_ty }.visit_type_mut(&mut modified_self);
+                        quote!(#modified_self)
+                    } else if recv.reference.is_some() {
+                        let msg = format!("Reference receivers ('&self') are not supported for Spawnable methods. Use explicit types such as Box<Self> or Arc<Self>. \n Reference receiver found in methid {}", func_name);
+                        println!("cargo:warning={}", msg);
+                        std::process::exit(1);
+                    } else {
+                        quote!(#self_ty)
+                    }
                 }
-            } else {
-                let selftype =  selftype.as_ref().unwrap();
-                let self_ty = syn::parse_str::<syn::Type>(
-                    &format!("std::sync::Arc<{}>", selftype)
-                ).expect(&format!("Could not parse {} into an Arc-type", selftype));
-                
-                quote!(#self_ty)
             }
         }).collect();
     
@@ -359,11 +367,27 @@ pub fn build_funcs_db(funcs: Vec<FuncMetaData> ) -> Vec<FuncEntry> {
             args: arg_types,
             ret: return_type,
             has_selfarg,
-            ref_args: ref_arg_pos,
         };
 
         database.push(entry);
     }
 
     database
+}
+
+struct ReplaceSelf {
+    replacement: Type,
+}
+impl VisitMut for ReplaceSelf {
+    fn visit_type_mut(&mut self, ty: &mut Type) {
+        if let Type::Path(type_path) = ty {
+            if type_path.qself.is_none()
+                && type_path.path.segments.len() == 1
+                && type_path.path.segments[0].ident.to_string().to_lowercase() == "self" {
+                *ty = self.replacement.clone();
+                return;
+            }
+        }
+        visit_mut::visit_type_mut(self, ty);
+    }
 }

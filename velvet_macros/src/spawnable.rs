@@ -123,7 +123,6 @@ impl <'ast> VisitMut for AddArg <'ast> {
 pub(super) struct FindTarget<'stmt> {
     pub(super) target: &'stmt String,
     pub(super) args: Option<Vec<TS2>>,
-    pub(super) ref_idx: &'stmt Vec<usize>,
     pub(super) ret_stmt: Option<Stmt>,
     pub(super) current_stmt: &'stmt Stmt,
 }
@@ -142,19 +141,13 @@ impl <'stmt> Visit <'stmt> for FindTarget <'stmt>  {
             // check if it is a call to the target func
             if path.segments.last().map_or(false, |seg| seg.ident.eq(self.target)) {
                 // collect args, but remove any '&'
-                // (this should only be relevant for Arcs, which are cloned already)
-                // if this leads to errors, it is because the original code is not threadsafe
-                let quoted_args: Vec<_> = expr.args.iter().enumerate().map(|(idx, arg)|  {
+                // TODO: FINDING A '&' SHOULD THROW AN ERROR;  not threadsafe
+                let quoted_args: Vec<_> = expr.args.iter().map(|arg|  {
                     let arg = match arg {
                         Expr::Reference(expr_ref) => &expr_ref.expr,
                         _ => arg,
                     };
-
-                    if self.ref_idx.contains(&idx) && Self::needs_clone(arg) {
-                        quote!(#arg.clone())
-                    } else {
-                        quote!( #arg )
-                    }
+                    quote!( #arg )
                 }).collect();
                 self.args = Some(quoted_args);
                 self.ret_stmt = Some(self.current_stmt.clone());
@@ -170,35 +163,19 @@ impl <'stmt> Visit <'stmt> for FindTarget <'stmt>  {
         if expr.method.eq(self.target) {
             // the selfarg
             let receiver = &expr.receiver;
-            let selfarg = quote!(#receiver.clone());
-
+            let selfarg = quote!(#receiver);
             // collect args, but remove any '&'
-            // (this should only be relevant for Arcs, which are cloned already)
-            // if this leads to errors, it is because the original code is not threadsafe
+            // TODO: FINDING A '&' SHOULD THROW AN ERROR;  not threadsafe
             let quoted_args: Vec<_> = std::iter::once(selfarg).chain(
-                expr.args.iter().enumerate().map(|(idx, arg)| {
+                expr.args.iter().map(|arg| {
                     let arg = match arg {
                         Expr::Reference(expr_ref) => &expr_ref.expr,
                         _ => arg,
                     };
-
-                    if self.ref_idx.contains(&(idx)) && Self::needs_clone(arg) {
-                        quote!(#arg.clone())
-                    } else {
-                        quote!( #arg )
-                    }
+                    quote!( #arg )
             })).collect();
             self.args = Some(quoted_args);
             self.ret_stmt = Some(self.current_stmt.clone());
-        }
-    }
-}
-impl <'stmt> FindTarget <'stmt> {
-    fn needs_clone(expr: &Expr) -> bool {
-        match expr {
-            Expr::Reference(expr_ref) => Self::needs_clone(&expr_ref.expr),
-            Expr::MethodCall(method_call) => method_call.method != "clone",
-            _ => true,
         }
     }
 }

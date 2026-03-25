@@ -1,6 +1,6 @@
 use proc_macro2::{Span, TokenStream as TS2};
 use syn::{Block, Error, Expr, Ident, ItemFn, parse::Result, parse_quote, parse_str, Stmt, visit::Visit, visit_mut::VisitMut};
-use super::spawnable::{AddArg, FindTarget, get_ref_indices, process_ret_stmt, SyncInput};
+use super::spawnable::{AddArg, FindTarget, process_ret_stmt, SyncInput};
 /*
     MODIFIES AST IN-PLACE
     given the number of recursive calls [n-many], do n-1 spawns and one 'local' recursive call last
@@ -30,7 +30,6 @@ pub(super) fn spawn_known(ast: &mut ItemFn, num_calls: usize) -> Result<SyncInpu
         counter: 0,
         count: num_calls-1,
         target: &name_str,
-        ref_idx: get_ref_indices(&ast.sig),
         frame_name: input_frame_expr,
         ret_map,
         error: None,
@@ -51,7 +50,6 @@ struct CountReplace<'ast> {
     counter: usize,
     count: usize,
     target: &'ast String,
-    ref_idx: Vec<usize>,
     frame_name: Expr,
     ret_map: Option<Vec<Option<Stmt>>>, // index in vector = UID-idx; value = Stmt with func-call
     error: Option<Error>,
@@ -107,7 +105,7 @@ impl <'ast> CountReplace<'ast> {
         Returns an Option holding the quoted arguments to the func, in case it was found
     */
     fn contains_target(&mut self, stmt: &Stmt) -> Option<Vec<TS2>> {
-        let mut visitor = FindTarget{ target: self.target, args: None, ref_idx: &self.ref_idx, ret_stmt: None, current_stmt: stmt };
+        let mut visitor = FindTarget{ target: self.target, args: None, ret_stmt: None, current_stmt: stmt };
         visitor.visit_stmt(stmt);
 
         if  visitor.args.is_some() {
@@ -139,7 +137,6 @@ mod tests {
 
         let num_calls = 2;
         let name_ident = ast.sig.ident.clone();
-        let ref_idx = get_ref_indices(&ast.sig);
         let name_str = name_ident.clone().to_string();
         let input_frame_str = format!("crate::__Frame__::Input{}", super::super::snake_to_pascal(&name_str));
         let input_frame_expr: Expr = syn::parse_str(&input_frame_str).unwrap();
@@ -148,7 +145,6 @@ mod tests {
             counter: 0,
             count: num_calls-1,
             target: &name_str,
-            ref_idx: ref_idx,
             frame_name: input_frame_expr,
             ret_map: None,
             error: None,
@@ -157,7 +153,7 @@ mod tests {
         counted_replacer.visit_item_fn_mut(&mut ast);
 
 
-        println!("COUNTER: {} \t COUNT: {} \t TARGET: {} \t REF_ARGS: {:?} \t FRAME_NAME: {:?} ",
-                    counted_replacer.counter,counted_replacer.count, counted_replacer.target, counted_replacer.ref_idx, counted_replacer.frame_name);
+        println!("COUNTER: {} \t COUNT: {} \t TARGET: {} \t FRAME_NAME: {:?} ",
+                    counted_replacer.counter,counted_replacer.count, counted_replacer.target, counted_replacer.frame_name);
     }
 }

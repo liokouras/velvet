@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream as TS2;
 use syn::{Block, Expr, ExprCall, ExprMethodCall, ExprPath, parse::Result, parse_quote, Stmt, 
     visit::{self, Visit}, visit_mut::{self, VisitMut}};
-use super::spawnable::{AddArg, FindTarget, get_ref_indices, process_ret_stmt, SyncInput};
+use super::spawnable::{AddArg, FindTarget, process_ret_stmt, SyncInput};
 
 /*
     IDENTIFY CONTEXT: non-loop block(s) || one, non-nested for-loop with max 6 recursive calls || rest [loops, nested/multiple]
@@ -79,7 +79,7 @@ fn single_loop_context(ast: &mut syn::ItemFn, name_str: &String) -> Result<SyncI
     ast.block.stmts.splice(0..0, [checkpoint_stmt, count_stmt]);
 
     // rewrite the for-loop with recursive calls [NOTE: undefined behavour for nested loops, and if there are recursive calls in multiple loops]
-    let mut loop_visitor = LoopRewriter { target: name_str, ref_idx: get_ref_indices(&ast.sig), done: false, ret_stmt: None };
+    let mut loop_visitor = LoopRewriter { target: name_str, done: false, ret_stmt: None };
     loop_visitor.visit_item_fn_mut(ast);
 
     let ret_stmt = match ast.sig.output {
@@ -103,12 +103,10 @@ fn spawn_all_context(ast: &mut syn::ItemFn, name_str: &String) -> Result<SyncInp
     // rewrite spawns
     let input_frame_str = format!("crate::__Frame__::Input{}", super::snake_to_pascal(name_str));
     let input_frame_expr: Expr = syn::parse_str(&input_frame_str).unwrap();
-    let ref_idx = get_ref_indices(&ast.sig);
     let mut spawn_replacer = SpawnReplace {
         count: None,
         insert_spawned: true,
         target: name_str,
-        ref_idx: &ref_idx,
         frame_name: input_frame_expr,
         ret_stmt: None,
     };
@@ -125,7 +123,6 @@ fn spawn_all_context(ast: &mut syn::ItemFn, name_str: &String) -> Result<SyncInp
 
 struct LoopRewriter<'ast> {
     target: &'ast String,
-    ref_idx: Vec<usize>,
     done: bool,
     ret_stmt: Option<Stmt>,
 }
@@ -263,7 +260,6 @@ impl <'ast>  LoopRewriter <'ast> {
             count: None,
             insert_spawned: false,
             target: &self.target,
-            ref_idx: &self.ref_idx,
             frame_name: input_frame_expr,
             ret_stmt: None,
         };
@@ -307,7 +303,6 @@ impl <'ast>  LoopRewriter <'ast> {
                 count: Some((counter.count, 1)),
                 insert_spawned: false,
                 target: &self.target,
-                ref_idx: &self.ref_idx,
                 frame_name: input_frame_expr,
                 ret_stmt: None,
             };
@@ -421,7 +416,6 @@ struct SpawnReplace<'block> {
     insert_spawned: bool, // whether or not to insert the spawned-tag
     target: &'block String,
     frame_name: Expr,
-    ref_idx: &'block Vec<usize>,
     ret_stmt: Option<Stmt>, // assignment stmt in case there is a return value. ASSUMES IT IS ALWAYS THE SAME
 }
 impl <'block> VisitMut for SpawnReplace<'block> {
@@ -487,7 +481,7 @@ impl <'block> SpawnReplace <'block> {
         Returns an Option holding the quoted arguments to the func, in case it was found
     */
     fn contains_target(&mut self, stmt: &Stmt) -> Option<Vec<TS2>> {
-        let mut visitor = FindTarget{ target: &self.target, args: None, ref_idx: &self.ref_idx, ret_stmt: None, current_stmt: stmt };
+        let mut visitor = FindTarget{ target: &self.target, args: None, ret_stmt: None, current_stmt: stmt };
         visitor.visit_stmt(stmt);
 
         if let Some(stmt) = visitor.ret_stmt {
@@ -883,7 +877,7 @@ mod tests {
         let expected: Stmt = syn::parse_str(r#"foo(1);"#).unwrap();
         
         let foo = String::from("foo");
-        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ref_idx: get_ref_indices(&ast.sig), ret_stmt: None };
+        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ret_stmt: None };
         loop_visitor.visit_item_fn_mut(&mut ast);
 
         if let Some(stmt) = loop_visitor.ret_stmt {
@@ -904,7 +898,7 @@ mod tests {
         let expected: Stmt = syn::parse_str(r#"vect.push(foo());"#).unwrap();
         
         let foo = String::from("foo");
-        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ref_idx: get_ref_indices(&ast.sig), ret_stmt: None };
+        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ret_stmt: None };
         loop_visitor.visit_item_fn_mut(&mut ast);
 
         if let Some(stmt) = loop_visitor.ret_stmt {
@@ -927,7 +921,7 @@ mod tests {
         let expected: Stmt = syn::parse_str(r#"vect.push(foo());"#).unwrap();
         
         let foo = String::from("foo");
-        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ref_idx: get_ref_indices(&ast.sig), ret_stmt: None };
+        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ret_stmt: None };
         loop_visitor.visit_item_fn_mut(&mut ast);
 
         if let Some(stmt) = loop_visitor.ret_stmt {
@@ -948,7 +942,7 @@ mod tests {
         let expected: Stmt = syn::parse_str(r#"accumulator += foo();"#).unwrap();
         
         let foo = String::from("foo");
-        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ref_idx: get_ref_indices(&ast.sig), ret_stmt: None };
+        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ret_stmt: None };
         loop_visitor.visit_item_fn_mut(&mut ast);
 
         if let Some(stmt) = loop_visitor.ret_stmt {
@@ -969,7 +963,7 @@ mod tests {
         let expected: Stmt = syn::parse_str(r#"acc = combined(acc, foo());"#).unwrap();
         
         let foo = String::from("foo");
-        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ref_idx: get_ref_indices(&ast.sig), ret_stmt: None };
+        let mut loop_visitor = LoopRewriter { target: &foo, done: false, ret_stmt: None };
         loop_visitor.visit_item_fn_mut(&mut ast);
 
         if let Some(stmt) = loop_visitor.ret_stmt {
@@ -994,14 +988,12 @@ mod tests {
         "#).unwrap();
         // rewrite spawns
         let name_str = String::from("foo");
-        let ref_idx = get_ref_indices(&ast.sig);
         let input_frame_str = String::from("crate::__Frame__::InputFoo");
         let input_frame_expr: Expr = syn::parse_str(&input_frame_str).unwrap();
         let mut spawn_replacer = SpawnReplace {
             count: None,
             insert_spawned: false,
             target: &name_str,
-            ref_idx: &ref_idx,
             frame_name: input_frame_expr,
             ret_stmt: None,
         };
