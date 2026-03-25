@@ -9,9 +9,9 @@ Velvet is a Rust library for ergonomic, efficient **divide-and-conquer paralleli
 - **Declarative parallelism via `#[spawnable]` macro** : Annotate recursive functions with `#[spawnable]` to automatically generate parallel execution code, without manual thread management.
 - **Dynamic load balancing via work stealing**: Tasks are dynamically distributed to idle workers via work-stealing. In divide-and-conquer workloads, large tasks are created, and stolen, first, while finer-grained tasks are created later and are less likely to be stolen. This makes work-stealing especially efficient and reduces load-balancing overhead.
 - **Automatic synchronization and scheduling**: Spawned tasks are synchronized automatically; no need for manual synchronization or barriers.
-- **Configurable worker pools with thread pinning**: Control the number of worker threads and optionally pin them to specific CPU cores for predictable performance.
+- **Configurable worker pools with thread pinning**: Control the number of worker threads and optionally pin them to specific CPU cores.
 - **Multiple work queue backends**: Three queue backends are supported: safe (default), Crossbeam, and unsafe. It is easy to experiment with diffent backends and add your own.
-- **Lightweight, compile-time code generation**: Parallelized code is generated at compile time via standard Rust metaprogramming features, keeping runtime overhead minimal.
+- **Lightweight, compile-time code generation**: Parallelized code is generated at compile time via standard Rust features, keeping runtime overhead minimal.
 - **Shared‑memory only**: Designed for parallelism on multi-core systems; Velvet does not provide a distributed runtime (...yet!)  
 
 ---
@@ -21,17 +21,20 @@ Velvet is a Rust library for ergonomic, efficient **divide-and-conquer paralleli
 *Before you begin, ensure that [both Rust and Cargo are installed](https://rust-lang.org/tools/install/) on your system.*
 
 ### 1. Add Velvet to your Cargo manifest
-Add Velvet as both **build dependency** and **dev dependency**:
+Add Velvet as both a **build dependency** and a **dev dependency**:
 
 ```toml
 [dependencies]
-velvet = { git = "https://github.com/liokouras/Velvet.git"}
+velvet = { git = "https://github.com/liokouras/Velvet.git", package = "velvet" }
 
 [build-dependencies]
-velvet = { git = "https://github.com/liokouras/Velvet.git"}
+velvet = { git = "https://github.com/liokouras/Velvet.git", package = "velvet" }
 ```
 
 (or, if you have a local copy of Velvet, add it via `path = path/to/velvet`)
+
+*To be updated after publishing to crates.io (soon!)*
+
 
 ### 2. Create or update your build script (`build.rs`)
 Velvet relies on a build script to generate parallel code. Either create the file `build.rs` in your package root (the directory containing `Cargo.toml`) or modify your existing one:
@@ -98,8 +101,9 @@ As a result:
 
 #### 2. **Arguments & Return Types**
 To uphold thread-safety, all arguments and return values to/from spawnable functions must be [`Send + 'static`](https://doc.rust-lang.org/std/marker/trait.Send.html).
-Non-`'static` references cannot be transferred between threads safely, so Velvet treats `&T` in function signatures as if they were [`Arc<T>`](https://doc.rust-lang.org/std/sync/struct.Arc.html) and will call `.clone()` when the value is passed to another thread. 
-If your spawnable function passes values by reference, make sure the values are wrapped in an `Arc` (this does not require changes to the function signature, as Rust's *deref coercion* allows an `Arc<T>` to be used where a `&T` is expected.).
+Non-`'static` references cannot be transferred between threads safely, so these cannot be used as arguments in spawnable functions.
+If your spawnable function passes values by reference, make sure to use `Box` if the reference can be moved, or [`Arc`](https://doc.rust-lang.org/std/sync/struct.Arc.html) if the reference is only to be borrowed.
+
 If the datatype of an argument or return value is externally defined, ensure it is brought into scope using its **full qualified path** rather than relying on wildcard imports. This allows Velvet to resolve and generate code for the type correctly.
 
 #### 3. **Unique Names**
@@ -177,7 +181,7 @@ TODO: differnet queue backends
 ---
 ## Examples
 
-TODO !!
+See example usage of Velvet in the [velvet_examples package](https://github.com/liokouras/velvet/tree/main/velvet_examples).
 
 ---
 
@@ -189,9 +193,9 @@ Apache 2.0, see [LICENSE](https://github.com/liokouras/velvet/blob/main/LICENSE)
 
 ## Notes for Future Features
 
+- Better error messages in code generation
 - Optional argument to `velvet_main` for runtime configuration.
 - `spawn!()` and `sync!()` macros for more involved control flow and programmer control.
-- Better error messages in code generation
 
 ---
 
