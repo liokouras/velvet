@@ -195,7 +195,7 @@ fn is_primitive(ident: &str) -> bool {
         "bool" | "char" | "str" |
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
         "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
-        "f32" | "f64" | "String" | "Vec")
+        "f32" | "f64" | "String" | "Vec" | "Box")
 }
 fn is_spawnable(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("spawnable"))
