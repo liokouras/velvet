@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TS2};
 use quote::quote;
-use syn::{Expr, ExprCall, ExprMethodCall, ExprPath, ItemFn, meta, parse::Result, parse_macro_input, parse_quote,
+use syn::{Expr, ExprCall, ExprMethodCall, ExprPath, Ident, ItemFn, meta, parse::Result, parse_macro_input, parse_quote,
     Stmt, visit::{self, Visit}, visit_mut::{self, VisitMut}};
 
 use super::{spawn_known::spawn_known, spawn_unknown::spawn_unknown, sync::sync};
@@ -14,7 +14,7 @@ pub(super) enum SyncInput {
 pub(super) fn build_spawnable(attrs: TokenStream, item: TokenStream) -> TokenStream {
     let mut ast = parse_macro_input!(item as ItemFn);
 
-    // parse arguments to macro
+    // parse arguments to macro (sensitive varuavkes and functions to sync on)
     let mut macro_args = SpawnableAttrs::default();
     let arg_parser = meta::parser(|nested_meta| macro_args.parse(nested_meta));
     parse_macro_input!(attrs with arg_parser);
@@ -31,7 +31,7 @@ pub(super) fn build_spawnable(attrs: TokenStream, item: TokenStream) -> TokenStr
             Ok(res) => res,
         }
     } else {
-        // case of unknwon number of recursive calls
+        // case of unknown number of recursive calls
         match spawn_unknown(&mut ast) {
             Err(e) => return e.to_compile_error().into(),
             Ok(res) => res,
@@ -39,9 +39,25 @@ pub(super) fn build_spawnable(attrs: TokenStream, item: TokenStream) -> TokenStr
     };
 
     // adds the 'sync' logic
-     match sync(&mut ast, sync_input, &macro_args.shareds) {
+     match sync(&mut ast, sync_input, &macro_args.sync_hints) {
         Err(e) => return e.to_compile_error().into(),
         Ok(()) => (),
+    }
+
+    // pass __worker__ to chained spawnable function
+    let spawnables = std::env::var("SPAWNABLES").unwrap();
+    if spawnables.len() > 0 {
+        let spawnables = spawnables.split(',')
+                    .map(|s| s.to_string())
+                    .collect::<std::collections::HashSet<_>>();
+        let worker_expr: Expr = parse_quote!(__worker__);
+
+        for spawnable in spawnables {
+            if !spawnable.eq(&ast.sig.ident.to_string()) {
+                let mut arg_adder = AddArg { arg: worker_expr.clone(), target: &spawnable };
+                arg_adder.visit_item_fn_mut(&mut ast);
+            }
+        }
     }
 
     quote!( #[allow(private_interfaces)] #ast ).into()
@@ -50,16 +66,18 @@ pub(super) fn build_spawnable(attrs: TokenStream, item: TokenStream) -> TokenStr
 #[derive(Default)]
 struct SpawnableAttrs {
     spawns: Option<syn::LitInt>,
-    shareds: Vec<syn::LitStr>,
+    sync_hints: Vec<syn::LitStr>, // function-calls and variables that need sync statements first
 }
 impl SpawnableAttrs {
     fn parse(&mut self, nested_meta: meta::ParseNestedMeta) -> Result<()> {
         if nested_meta.path.is_ident("spawns") {
             self.spawns = Some(nested_meta.value()?.parse()?);
             Ok(())
-        } else if nested_meta.path.is_ident("shared") {
+        } else if nested_meta.path.is_ident("sync_hints") 
+                || nested_meta.path.is_ident("sync_hint")
+                || nested_meta.path.is_ident("shared") {
             let raw_list: syn::ExprArray = nested_meta.value()?.parse()?;
-            self.shareds = raw_list.elems
+            self.sync_hints = raw_list.elems
                 .into_iter()
                 .map(|expr| match expr {
                     Expr::Lit(syn::ExprLit {
@@ -205,7 +223,7 @@ pub(super) fn get_ref_indices(sig: &syn::Signature) -> Vec<usize> {
 pub(super) fn process_ret_stmt(name_str: &String, ret_stmt: Option<Stmt>) -> Option<Stmt> {
     struct Replacer<'a> {
         target: &'a str,
-        replacement: syn::Ident,
+        replacement: Ident,
     }
     impl<'a> VisitMut for Replacer<'a> {
         fn visit_expr_mut(&mut self, expr: &mut Expr) {
@@ -243,7 +261,7 @@ pub(super) fn process_ret_stmt(name_str: &String, ret_stmt: Option<Stmt>) -> Opt
 
     if let Some(stmt) = ret_stmt {
         let mut stmt = stmt.clone();
-        let replacement = syn::Ident::new("__SYNC_RES__", Span::call_site());
+        let replacement = Ident::new("__SYNC_RES__", Span::call_site());
         let mut replacer = Replacer {target: name_str, replacement };
         replacer.visit_stmt_mut(&mut stmt);
 

@@ -31,7 +31,7 @@ fn main() {
     }
 }
 
-#[velvet_main(nqueens_spawn)]
+#[velvet_main]
 fn velvet_main(n: usize) {
     let board = vec![0;n];
 

@@ -17,7 +17,7 @@ use super::spawnable::SyncInput;
         In the 'looped' spawns case, no UIDs; count & checkpoint logic. for multi-block, have a checkpoint reset
 */
 
-pub(super) fn sync(ast: &mut ItemFn, sync_input: SyncInput, shared_vars: &Vec<syn::LitStr>) -> Result<()> {
+pub(super) fn sync(ast: &mut ItemFn, sync_input: SyncInput, sync_hints: &Vec<syn::LitStr>) -> Result<()> {
     let input_case = gen_input_frame_line(&ast.sig);
     let output_case = gen_output_frame_line(&ast.sig);
     let sync_logic = gen_sync_logic(&input_case, &output_case);
@@ -28,8 +28,8 @@ pub(super) fn sync(ast: &mut ItemFn, sync_input: SyncInput, shared_vars: &Vec<sy
     let mut sync_stmts_singleblock: Vec<Vec<Stmt>>;
     let mut sync_stmts_multiblock = Vec::new();
     let mut sensitivities = Vec::new(); // for positioning
-    let vars = if shared_vars.len() > 0 {
-        let maybe_vars = shared_vars.iter()
+    let vars = if sync_hints.len() > 0 {
+        let maybe_vars = sync_hints.iter()
             .map(|litstr| litstr.parse::<Ident>())
             .collect::<Result<HashSet<_>>>();
         maybe_vars.expect("Ensure arguments to 'shared' are valid variable identifiers")
@@ -260,7 +260,7 @@ fn handle_sensitivity_scope(expr: &Expr, new_stmts: &mut Vec<Stmt>, spawns_in_sc
         // given LIFO semantics, must sync on all spawns in the match + the ones after
         let idx = matches.iter().filter_map(|&matche| {
                 spawns_in_scope.iter().position(|&spawn| spawn == matche)
-            }).min().unwrap();
+            }).min().unwrap_or(0); // default to index 0 if there was no match (we have to sync everything)
         // remove synced ids from spawns-in-scope in case there are some left which we don't have to sync yet
         let mut ids_to_sync = spawns_in_scope.split_off(idx);
         ids_to_sync.reverse();
@@ -272,6 +272,7 @@ fn handle_sensitivity_scope(expr: &Expr, new_stmts: &mut Vec<Stmt>, spawns_in_sc
     } else { false }
 }
 
+// TODO: add still macro invocations (eg vec![x, y])
 struct VarCollector { vars: HashSet<Ident> }
 impl <'stmt> Visit <'stmt> for VarCollector {
     fn visit_expr_path(&mut self, expr_path: &'stmt syn::ExprPath) {
@@ -301,28 +302,54 @@ impl <'stmt> Visit <'stmt> for VarCollector {
             self.visit_expr(arg);
         }
     }
+}
 
-    fn visit_pat(&mut self, pat: &'stmt syn::Pat) {
-        visit::visit_pat(self, pat);
+struct CallCollector { calls: HashSet<Ident> }
+impl<'stmt> Visit<'stmt> for CallCollector {
+    fn visit_expr_call(&mut self, node: &'stmt syn::ExprCall) {
+        if let Expr::Path(expr_path) = &*node.func {
+            if let Some(ident) = expr_path.path.get_ident() {
+                self.calls.insert(ident.clone());
+            }
+        }
+        for arg in &node.args {
+            self.visit_expr(arg);
+        }
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'stmt syn::ExprMethodCall) {
+        self.calls.insert(node.method.clone());
+        self.visit_expr(&node.receiver);
+        for arg in &node.args {
+            self.visit_expr(arg);
+        }
     }
 }
 
 fn has_sensitivity_numbered(expr: &Expr, ids: &Vec<usize>, sensitivities: &Vec<HashSet<Ident>>) -> Vec<usize> {
-    let mut collector = VarCollector{ vars: HashSet::new() };
-    collector.visit_expr(expr);
+    let mut var_collector = VarCollector{ vars: HashSet::new() };
+    var_collector.visit_expr(expr);
+
+    // also collect functions called
+    let mut call_collector = CallCollector{ calls: HashSet::new() };
+    call_collector.visit_expr(expr);
+
+    let collected = &var_collector.vars | &call_collector.calls;
 
     let mut in_scope_spawns = Vec::new();
     if sensitivities.iter().all(|sens_list| sens_list.is_empty()) {
         in_scope_spawns
     } else {
-        for id in ids {
-            // sensitivity-indexing is off-by-one because of shared variables in pos 0
-            if sensitivities[*id + 1].iter().any(|ident| collector.vars.contains(ident)) {
-                in_scope_spawns.push(*id);
+        if sensitivities.len() > 1 {
+            for id in ids {
+                // sensitivity-indexing is off-by-one because of shared variables in pos 0
+                if sensitivities[*id + 1].iter().any(|ident| collected.contains(ident)) {
+                    in_scope_spawns.push(*id);
+                }
             }
         }
         // it is more nuanced than this: only care about reads (incl distinguishing between VAR.load and VAR.store)!! TODO
-        if sensitivities[0].iter().any(|ident| collector.vars.contains(ident)) {
+        if sensitivities[0].iter().any(|ident| collected.contains(ident)) {
             in_scope_spawns.push(0);
         }
 
@@ -446,9 +473,13 @@ fn handle_expr(expr: &mut Expr, sensitivities: &Vec<Ident>, mut seen_spawn: bool
 }
 
 fn has_sensitivity(expr: &Expr, sensitivities: &Vec<Ident>) -> bool {
-    let mut collector = VarCollector{ vars: HashSet::new() };
-    collector.visit_expr(expr);
-    sensitivities.iter().any(|id| collector.vars.contains(id))
+    let mut var_collector = VarCollector{ vars: HashSet::new() };
+    var_collector.visit_expr(expr);
+    // also collect functions called
+    let mut call_collector = CallCollector{ calls: HashSet::new() };
+    call_collector.visit_expr(expr);
+    let collected = &var_collector.vars | &call_collector.calls;
+    sensitivities.iter().any(|id| collected.contains(id))
 }
 
 fn contains_spawn(expr: &Expr) -> bool {
@@ -1072,4 +1103,39 @@ mod tests {
         let pretty = prettyplease::unparse(&file);
         println!("RESULT \n {}", pretty);
     }
+
+    #[test]
+    fn test_shared_vars(){
+        let mut ast: ItemFn = syn::parse_str(r#"
+            fn bar(y: i32){
+                bar(y+10);
+                let m = y+X;
+                bar(y+8);
+                bar(y+2);
+            }"#).unwrap();
+
+        // add VelvetWorker as an argument to the function
+        spawnable::add_worker(&mut ast);
+        
+        // adds the 'spawn' logic
+        let sync_input = {
+            // case of known number of recursive calls
+            let num_calls: usize = 3;
+            match spawn_known::spawn_known(&mut ast, num_calls) {
+                Err(_) => panic!("error"),
+                Ok(res) => res,
+            }
+        };
+        let sensitive_var = syn::LitStr::new("X", ast.sig.ident.span());
+        let sens = Vec::from(&[sensitive_var]);
+        let _ = sync(&mut ast, sync_input, &sens);
+        let code_string = quote!(#ast).to_string();
+        let file = syn::parse_file(&code_string).unwrap();
+        let pretty = prettyplease::unparse(&file);
+        println!("RESULT \n {}", pretty);
+
+    }
+
+
+
 }

@@ -47,7 +47,7 @@ fn main() {
     }
 }
 
-#[velvet_main(tsp_spawn)]
+#[velvet_main]
 fn velvet_main(ntowns: usize) {
     let path: u128 = 1u128; 
     let length = 0;

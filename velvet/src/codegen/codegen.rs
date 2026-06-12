@@ -44,4 +44,10 @@ pub fn generate(files: Vec<&str>) {
         &dest_path,
         pretty_code
     ).unwrap();
+
+    // set envr variable with spawnable function names
+    let spawnables: Vec<String> = func_db.into_iter().map(|entry| entry.name.to_string()).collect();
+    let spawnables = spawnables.join(",");
+    println!("cargo:rustc-env=SPAWNABLES={}", spawnables);
+
 }

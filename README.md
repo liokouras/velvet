@@ -83,7 +83,7 @@ fn fib(n: u64) -> u64 {
 
 The function that invokes your spawnable function must also be annotated as follows:
 ```rust
-#[velvet_main(fib)]
+#[velvet_main]
 fn main() {
     fib(42);
 }
@@ -97,19 +97,22 @@ Both `spawnable` and `velvet_main` macros are exposed through Velvet's prelude. 
 The function annotated with `velvet_main` serves as the entry point for parallel execution. This is where Velvet creates and manages the thread pool for spawned tasks.
 As a result:
 - Each Velvet application should have at most one `velvet_main` function, unless you explicitly want to create multiple independent thread pools.
-- All top-level calls to spawnable functions must originate from the same `velvet_main` function. However, this is likely to change with the introduction of a `spawn!()` macro for more developer control (see [Notes for Future Features](#notes-for-future-features))
+- The root worker is initialized in `velvet_main` and the top-level call to the first `spawnable` function must happen from  this `velvet_main` function. Multiple `spawnable` functions are callable from `velvet_main`.
 
-#### 2. **Arguments & Return Types**
+#### 2. **Multiple `spawnable` Functions**
+At the moment, `spawnable` functions are only callable from `velvet_main` or other `spawnable` functions. However, this may change in the future (see [Notes for Future Features](#notes-for-future-features))
+
+#### 3. **Arguments & Return Types**
 To uphold thread-safety, all arguments and return values to/from spawnable functions must be [`Send + 'static`](https://doc.rust-lang.org/std/marker/trait.Send.html).
 Non-`'static` references cannot be transferred between threads safely, so these cannot be used as arguments in spawnable functions.
 If your spawnable function passes values by reference, make sure to use `Box` if the reference can be moved, or [`Arc`](https://doc.rust-lang.org/std/sync/struct.Arc.html) if the reference is only to be borrowed.
 
 If the datatype of an argument or return value is externally defined, ensure it is brought into scope using its **full qualified path** rather than relying on wildcard imports. This allows Velvet to resolve and generate code for the type correctly.
 
-#### 3. **Unique Names**
+#### 4. **Unique Names**
 Spawnable function names must be unique across the entire crate, even if defined in different modules.
 
-#### 4. **Loop Constraints**
+#### 5. **Loop Constraints**
 Velvet supports spawning in a loop, but there are some constraints to ensure correct parallel execution.
 In general, the use of return values from recursive calls must be uniform and not depend on variables that are only defined inside the loop body. This is because when Velvet synchronizes spawned calls, information about locally scoped variables is not preserved.
 For example, the following is supported:
@@ -134,11 +137,11 @@ Neither is this:
 ```
 In these cases, the use return values from recursive calls depends on loop-local variables (`i` or `res`) whose values are not tracked by Velvet after spawning.
 
-#### 5. **Explicit Returns**
+#### 6. **Explicit Returns**
 For functions with return values, use explicit `return val;`
 This is required for Velvet to insert synchronization points correctly.
 
-#### 6. **Sequential Thresholds**
+#### 7. **Sequential Thresholds**
 Most parallel applications use a threshold to decide when to stop spawning parallel tasks and execute them directly. In general, the recursive base-case will act as such a threshold. However, parallel divide-and-conquer often benefits from a more coarse-grained threshold, which is easy to implement:
 ```rust
 #[spawnable]
@@ -194,6 +197,7 @@ Apache 2.0, see [LICENSE](https://github.com/liokouras/velvet/blob/main/LICENSE)
 ## Notes for Future Features
 
 - Better error messages in code generation
+- Make `spawnable` functions callable from anywhere; requires global scope of work-queues.
 - Optional argument to `velvet_main` for runtime configuration.
 - `spawn!()` and `sync!()` macros for more involved control flow and programmer control.
 

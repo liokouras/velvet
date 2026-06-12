@@ -46,7 +46,7 @@ fn seq_main(depth: usize, dim: usize) {
     println!("MATMUL({}x{}); OK = {} IN SEQUENTIAL TIME: {}", full_dim, full_dim, ok, end.as_secs_f32());
 }
 
-#[velvet_main(spawn_matmul)]
+#[velvet_main]
 fn velvet_main(depth: usize, dim: usize) {
     let matrix_a = Arc::new(Matrix::new(depth, dim, 1.0, false));
     let matrix_b= Arc::new(Matrix::new(depth, dim, 2.0, false));

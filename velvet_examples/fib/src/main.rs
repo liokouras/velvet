@@ -29,7 +29,7 @@ fn main() {
     }
 }
 
-#[velvet_main(fib)]
+#[velvet_main]
 fn velvet_main(n: u64) {
     let start = Instant::now();
     let res = fib(n);

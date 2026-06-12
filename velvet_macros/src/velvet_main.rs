@@ -9,11 +9,11 @@ use syn::{Expr, ItemFn, parse_quote, visit_mut::{self, VisitMut}};
         - root_worker.wait()
     and modifies the calls to spawnable functions to pass in the root-worker as an argument
 */
-pub(super) fn build_velvet_main(targets: TokenStream, item: TokenStream) -> TokenStream {
+pub(super) fn build_velvet_main(_: TokenStream, item: TokenStream) -> TokenStream {
     let mut ast = syn::parse_macro_input!(item as ItemFn);
 
     // MODIFY FUNCTION BODY TO CALL TARGET FUNCTIONS WITH ROOT_WORKER ARG
-    modify_func_body(targets, &mut ast);
+    modify_func_body(&mut ast);
 
     // VELVET SETUP
     let queue_size = get_queue_size();
@@ -40,17 +40,20 @@ pub(super) fn build_velvet_main(targets: TokenStream, item: TokenStream) -> Toke
     adds the root_worker arg to all calls to target functions
     eg change 'spawnable(arg)' to 'spawnable(root_worker, arg)'
 */
-fn modify_func_body(targets: TokenStream, ast: &mut ItemFn) {
+fn modify_func_body(ast: &mut ItemFn) {
     let root_worker: Expr = parse_quote! { &mut __root__worker__ };
     
     // collect the velvet-functions that must be re-written
-    let target_functions: HashSet<String> = targets.to_string().split(',').map(|item| {
-        item.trim().split('/').last().unwrap_or(item).to_string()
-    }).collect();
-    
-    // visitor to re-write the calls to target functions
-    let mut rewriter = ArgRewriter { targets: target_functions, arg_expr: &root_worker };
-    rewriter.visit_item_fn_mut(ast);
+    let spawnables = std::env::var("SPAWNABLES").unwrap();
+    if spawnables.len() > 0 {
+        let spawnables = spawnables.split(',')
+                    .map(|s| s.to_string())
+                    .collect::<HashSet<_>>();
+
+        // visitor to re-write the calls to target functions
+        let mut rewriter = ArgRewriter { targets: spawnables, arg_expr: &root_worker };
+        rewriter.visit_item_fn_mut(ast);
+    }
 }
 
 /*

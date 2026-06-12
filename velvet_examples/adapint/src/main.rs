@@ -36,7 +36,7 @@ fn f(x: f64) -> f64 {
     x.sin() * 0.1 * x
 }
 
-#[velvet_main(adapint)]
+#[velvet_main]
 fn velvet_main(a: f64, b: f64, epsilon: f64) {
     let start = Instant::now();
     let res = adapint(a, b, epsilon);
