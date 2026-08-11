@@ -48,6 +48,20 @@ impl VisitMut for FnVisitor {
         visit_mut::visit_item_enum_mut(self, node);
     }
 
+    fn visit_item_struct_mut(&mut self, node: &mut syn::ItemStruct) {
+        let struct_name = node.ident.to_string();
+        let full_path = format!("{}{}", self.qualified_path, struct_name);
+        self.import_map.insert(struct_name, full_path);
+        visit_mut::visit_item_struct_mut(self, node);
+    }
+
+    fn visit_item_type_mut(&mut self, node: &mut syn::ItemType) {
+        let alias_name = node.ident.to_string();
+        let full_path = format!("{}{}", self.qualified_path, alias_name);
+        self.import_map.insert(alias_name, full_path);
+        visit_mut::visit_item_type_mut(self, node);
+    }
+
     fn visit_item_impl_mut(&mut self, node: &mut syn::ItemImpl) {
         // if we are in an 'impl' block, keep track of what the selftype is
         if let Type::Path(type_path) = &*node.self_ty {
@@ -330,10 +344,13 @@ pub fn build_funcs_db(funcs: Vec<FuncMetaData> ) -> Vec<FuncEntry> {
                 FnArg::Typed(pat_type) => {
                     let ty = &*pat_type.ty;
 
-                    if let Type::Reference(syn::TypeReference { .. }) = ty {
-                        let msg = format!("Reference arguments are not supported for Spawnable functions. Reference found in function {} at arg position {}", func_name, idx);
-                        println!("cargo:warning={}", msg);
-                        std::process::exit(1);
+                    if let Type::Reference(syn::TypeReference { lifetime, .. }) = ty {
+                        let is_static = lifetime.as_ref().map(|lt| lt.ident == "static").unwrap_or(false);
+                        if !is_static {
+                            let msg = format!("Non-'static reference arguments are not supported for Spawnable functions. Reference found in function {} at arg position {}", func_name, idx);
+                            println!("cargo:warning={}", msg);
+                            std::process::exit(1);
+                        }
                     }
                     quote!(#ty)
                 },
