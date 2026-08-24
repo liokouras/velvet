@@ -126,15 +126,16 @@ fn seq_main(mut arr: Vec<i32>, seed: usize){
 fn velvet_main(arr: Vec<i32>, seed: usize) {
     let len = arr.len();
 
-    use std::sync::atomic;
-    par_merge::VEC.set(arr).unwrap();
-    let vec: Vec<atomic::AtomicIsize> = (0..len).map(|_| atomic::AtomicIsize::new(0)).collect();
-    par_merge::VEC_SORTED.set(vec).unwrap();
-    let vec: Vec<atomic::AtomicIsize> = (0..len).map(|_| atomic::AtomicIsize::new(0)).collect();
-    par_merge::VEC_MERGED.set(vec).unwrap();
+    use std::sync::atomic::AtomicIsize;
+    let vec_sorted: Vec<AtomicIsize> = (0..len).map(|_| AtomicIsize::new(0)).collect();
+    let vec_merged: Vec<AtomicIsize> = (0..len).map(|_| AtomicIsize::new(0)).collect();
+
+    let vec_sorted: &'static [AtomicIsize] = Box::leak(Box::new(vec_sorted));
+    let vec_merged: &'static [AtomicIsize] = Box::leak(Box::new(vec_merged));
+    let arr : &'static [i32] = Box::leak(Box::new(arr));
 
     let start = Instant::now();
-    par_merge::sort_spawn(0, len, true);
+    par_merge::sort_spawn(&vec_sorted, &vec_merged, &arr, true);
     let end = start.elapsed();
     
     let version = match velvet_get_queue_name().as_str() {
@@ -144,6 +145,6 @@ fn velvet_main(arr: Vec<i32>, seed: usize) {
         _ => -10,
     };
     println!("{},{},{},{},{},{}", version, velvet_get_num_workers(), DIRECT_THRESHOLD, len, seed, end.as_secs_f32());
-    let sorted: Vec<i32> = par_merge::VEC_SORTED.get().unwrap().iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed) as i32).collect();
+    let sorted: Vec<i32> = vec_sorted.iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed) as i32).collect();
     _check(sorted);
 }
