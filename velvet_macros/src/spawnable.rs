@@ -158,13 +158,12 @@ impl <'stmt> Visit <'stmt> for FindTarget <'stmt>  {
         if let Expr::Path(ExprPath { path, .. }) = &*expr.func {
             // check if it is a call to the target func
             if path.segments.last().map_or(false, |seg| seg.ident.eq(self.target)) {
-                // collect args, but remove any '&'
-                // TODO: FINDING A '&' SHOULD THROW AN ERROR;  not threadsafe
                 let quoted_args: Vec<_> = expr.args.iter().map(|arg|  {
-                    let arg = match arg {
-                        Expr::Reference(expr_ref) => &expr_ref.expr,
-                        _ => arg,
-                    };
+                    // not accepting & args
+                    // let arg = match arg {
+                    //     Expr::Reference(expr_ref) => &expr_ref.expr,
+                    //     _ => arg,
+                    // };
                     quote!( #arg )
                 }).collect();
                 self.args = Some(quoted_args);
