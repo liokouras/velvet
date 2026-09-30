@@ -1,4 +1,4 @@
-use std::{env, fs, path::{Path, PathBuf}, process::exit};
+use std::{env, fs, path::{Path, PathBuf}};
 use syn;
 use prettyplease;
 
@@ -9,26 +9,29 @@ use prettyplease;
 // 4. writes this to (new) file OUT_DIR/velvet_app.rs
 pub fn generate(files: Vec<&str>) {
     // verify provided filepaths
+    // errors are reported to cargo (see report_error) and checking continues, so that all errors are reported at once
     let mut filepaths = Vec::new();
     for file in files {
         let filepath = PathBuf::from(file);
         match filepath.try_exists() {
             Ok(true) => filepaths.push(filepath),
             Ok(false) => {
-                println!("cargo::Error=provided file does not exist. Please check filepath and try again. Provided filepath: {:?}", filepath);
-                exit(1);
+                super::report_error(&format!("velvet::generate: file {:?} (listed in build.rs) does not exist. Please check the path; it is relative to the package root (the directory containing Cargo.toml).", filepath));
             },
             Err(e) => {
-                println!("cargo::Error=Existence of provided file could not be verified. Please check permissions on filepath and try again. 
-                Provided filepath: {:?}. Error: {}", filepath, e);
-                exit(1);
+                super::report_error(&format!("velvet::generate: could not check whether file {:?} (listed in build.rs) exists: {}. Please check the path and its permissions.", filepath, e));
             }
         }
     }
-    
+
     // find the spawnable functions in the provided files and create a 'database'
-    let funcs = super::find_functions(filepaths);            
+    let funcs = super::find_functions(filepaths);
     let func_db = super::build_funcs_db(funcs);
+
+    // after any error, cargo fails the build once the build script finishes; do not generate code
+    if super::errors_reported() {
+        return;
+    }
 
     // use the database to write the custom enum and function
     let frame_enum = super::generate_frame_enum(&func_db);

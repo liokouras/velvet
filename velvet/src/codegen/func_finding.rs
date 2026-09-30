@@ -1,7 +1,8 @@
-use std::{collections::HashMap, error::Error, fs, path::{Path as path, PathBuf}, process::exit};
+use std::{collections::HashMap, error::Error, fs, path::{Path as path, PathBuf}};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{self, FnArg, Ident, Path, Signature, Type, UseTree, visit_mut::{self, VisitMut}};
+use super::report_error;
 
 pub type FuncMetaData = (Option<String>, Signature, Path); // (Option<selftype>, Func Sig, func's qualified path)
 
@@ -22,12 +23,16 @@ struct FnVisitor {
     methods: Vec<(String, Option<String>, Signature)>, // (qualified path for method, selftype, func sig)
     current_selftype: Option<String>,
     in_sig: bool,
+    current_fn: String, // name of the spawnable whose signature is being visited (for error messages)
+    collecting: bool, // first pass: only collect definitions/imports/modules (so that their order in the file does not matter)
 }
 impl VisitMut for FnVisitor {
     fn visit_item_mod_mut(&mut self, node: &mut syn::ItemMod) {
         // need to push this nested module name onto the path
         let mod_name = node.ident.to_string();
         let old_path = self.qualified_path.clone();
+        // record the module itself, so that module-qualified types (`mod_name::Type`) can be resolved
+        self.import_map.insert(mod_name.clone(), format!("{}{}", old_path, mod_name));
         self.qualified_path = format!("{}{}::", old_path, mod_name);
 
         // recurse into mod
@@ -79,8 +84,9 @@ impl VisitMut for FnVisitor {
         // add all spawnable method signatures
         for item in &mut node.items {
             if let syn::ImplItem::Fn(method) = item {
-                if is_spawnable(&method.attrs) {
+                if is_spawnable(&method.attrs) && !self.collecting {
                     // re-write method signature with qualified types
+                    self.current_fn = method.sig.ident.to_string();
                     self.in_sig = true;
                     for input in &mut method.sig.inputs {
                         self.visit_fn_arg_mut(input);
@@ -100,8 +106,9 @@ impl VisitMut for FnVisitor {
     }
 
     fn visit_item_fn_mut(&mut self, node: &mut syn::ItemFn) {
-        if is_spawnable(&node.attrs) {
+        if is_spawnable(&node.attrs) && !self.collecting {
             // re-write function signature with qualified types
+            self.current_fn = node.sig.ident.to_string();
             self.in_sig = true;
             for arg in &mut node.sig.inputs {
                 self.visit_fn_arg_mut(arg);
@@ -137,24 +144,43 @@ impl VisitMut for FnVisitor {
             }
         }
 
-        // if type is imported, re-write it to its fully qualified path
+        // re-write the type to its path from the crate root (the generated code lives at the crate root)
         if let Some(top_level) = node.path.segments.first() {
             let ident = &top_level.ident;
             let name = ident.to_string();
-            if is_primitive(&name) {
-                return; // do not rewrite primitives
+            if is_primitive(&name) && node.path.segments.len() == 1 {
+                return; // do not rewrite primitives (and prelude types)
+            }
+
+            // paths that are already valid at the crate root: `crate::..`, `std::..`, `core::..`, `alloc::..`, `::..`
+            if node.path.leading_colon.is_some() || matches!(name.as_str(), "crate" | "std" | "core" | "alloc") {
+                return;
+            }
+
+            // paths relative to the current module: `self::..`, `super::..`
+            if name == "self" || name == "super" {
+                let num_relative = node.path.segments.iter().take_while(|seg| seg.ident == "self" || seg.ident == "super").count();
+                let prefix: Vec<String> = node.path.segments.iter().take(num_relative).map(|seg| seg.ident.to_string()).collect();
+                if let Some(module) = self.relative_module(&prefix) {
+                    let mut full_path: Path = syn::parse_str(&module).expect(&format!("could not parse {}", module));
+                    full_path.segments.extend(node.path.segments.iter().skip(num_relative).cloned());
+                    node.path = full_path;
+                }
+                return; // (too many `super`s: left as written; rustc reports it)
             }
 
             if let Some(full_path_str) = self.import_map.get(&name) {
-                // save arguments to transfer to the full-path version
-                let args = &top_level.arguments;
-
                 // parse the full path string into a Path
                 let mut full_path: Path = syn::parse_str(full_path_str).expect(&format!("could not parse {}",full_path_str));
-                
-                // re-attach arguments from 'top-level' to the fully qualified path
-                if let Some(last_seg) = full_path.segments.last_mut() {
-                    last_seg.arguments = args.clone();
+
+                if node.path.segments.len() == 1 {
+                    // `Type<..>`: re-attach the generic arguments to the fully qualified path
+                    if let Some(last_seg) = full_path.segments.last_mut() {
+                        last_seg.arguments = top_level.arguments.clone();
+                    }
+                } else {
+                    // `module::Type<..>` with a known module (or imported name): keep the rest of the path
+                    full_path.segments.extend(node.path.segments.iter().skip(1).cloned());
                 }
 
                 // overwrite
@@ -162,11 +188,44 @@ impl VisitMut for FnVisitor {
                 return;
             }
 
-            println!("cargo::Error=Could not detect qualified path for non-primitive type : {}. Make sure it is explicitly imported", name);
+            // a path starting with an unknown name, e.g. an external crate (`rand::rngs::StdRng`): valid at the crate root as written
+            if node.path.segments.len() > 1 {
+                return;
+            }
+
+            report_error(&format!(
+                "spawnable `{}`: cannot resolve type `{}` in its signature: it is not defined in this file and not imported with `use`. \
+                 Velvet generates code at the crate root, so it needs to know where the type lives: \
+                 import it (e.g. `use crate::module::{};`) or write its path from the crate root (e.g. `crate::module::{}`).",
+                self.current_fn, name, name, name));
         }
     }
 }
 impl FnVisitor {
+    // the module (e.g. `crate::a`) that a `self::`/`super::` prefix refers to, from the current module;
+    // None if there are more `super`s than enclosing modules
+    fn relative_module(&self, prefix: &[String]) -> Option<String> {
+        let mut module: Vec<&str> = self.qualified_path.trim_end_matches("::").split("::").collect();
+        for seg in prefix {
+            if seg == "super" {
+                if module.len() <= 1 { return None; }
+                module.pop();
+            }
+        }
+        Some(module.join("::"))
+    }
+
+    // an imported path, resolved to the crate root if it starts with `self::`/`super::`
+    fn resolve_import(&self, path: String) -> String {
+        let segments: Vec<String> = path.split("::").map(|s| s.to_string()).collect();
+        let num_relative = segments.iter().take_while(|s| *s == "self" || *s == "super").count();
+        if num_relative == 0 { return path; }
+        match self.relative_module(&segments[..num_relative]) {
+            Some(module) => std::iter::once(module).chain(segments[num_relative..].iter().cloned()).collect::<Vec<_>>().join("::"),
+            None => path,
+        }
+    }
+
     fn collect_imports(&mut self, use_tree: &UseTree, prefix: String) {
         match use_tree {
             UseTree::Path(syn::UsePath { ident, tree, .. }) => {
@@ -183,6 +242,7 @@ impl FnVisitor {
                 } else {
                     format!("{prefix}::{}", ident)
                 };
+                let full_path = self.resolve_import(full_path);
                 self.import_map.insert(ident.to_string(), full_path);
             }
             UseTree::Rename(syn::UseRename { ident, rename, .. }) => {
@@ -191,6 +251,7 @@ impl FnVisitor {
                 } else {
                     format!("{prefix}::{}", ident)
                 };
+                let full_path = self.resolve_import(full_path);
                 self.import_map.insert(rename.to_string(), full_path);
             }
             UseTree::Group(syn::UseGroup { items, .. }) => {
@@ -209,7 +270,7 @@ fn is_primitive(ident: &str) -> bool {
         "bool" | "char" | "str" |
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
         "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
-        "f32" | "f64" | "String" | "Vec" | "Box")
+        "f32" | "f64" | "String" | "Vec" | "Box" | "Option" | "Result")
 }
 fn is_spawnable(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("spawnable"))
@@ -241,9 +302,8 @@ pub(crate) fn find_functions(filepaths: Vec<PathBuf>) -> Vec<FuncMetaData> {
     for filepath in filepaths {
         match get_funcs(&filepath) {
             Ok(funcs) => { all_funcs.push(funcs); }
-            Err(e) => {   
-                println!("cargo::Error=Error: while looking for spawnable functions in file {:#?} ; {}", filepath, e);
-                exit(1);
+            Err(e) => {
+                report_error(&format!("velvet::generate: could not read or parse file {:?} while looking for spawnable functions: {}", filepath, e));
             }
         }
     }
@@ -268,7 +328,12 @@ fn get_funcs(filepath: &path) -> Result<Vec<FuncMetaData>, Box<dyn Error>> {
         methods: Vec::new(), 
         current_selftype: None, 
         in_sig: false,
+        current_fn: String::new(),
+        collecting: true,
     };
+    // first pass: collect all definitions, imports and modules of the file; second pass: re-write the signatures
+    funcs.visit_file_mut(&mut ast.clone());
+    funcs.collecting = false;
     funcs.visit_file_mut(&mut ast);
     
     //  convert collected function- and method-info into FuncMetaData type
@@ -339,36 +404,44 @@ pub fn build_funcs_db(funcs: Vec<FuncMetaData> ) -> Vec<FuncEntry> {
         let has_selfarg = sig.receiver().is_some();
         let func_name = sig.ident;
 
-        let arg_types: Vec<_> = sig.inputs.iter().enumerate().map(|(idx, arg)| {
+        // qualified name of the spawnable, for error messages, e.g. `crate::matrix_par::Matrix::spawn_matmul`
+        let display_path = path.segments.iter().map(|seg| seg.ident.to_string()).collect::<Vec<_>>().join("::");
+
+        let arg_types: Vec<_> = sig.inputs.iter().map(|arg| {
             match arg {
                 FnArg::Typed(pat_type) => {
                     let ty = &*pat_type.ty;
-
-                    if let Type::Reference(syn::TypeReference { lifetime, .. }) = ty {
-                        let is_static = lifetime.as_ref().map(|lt| lt.ident == "static").unwrap_or(false);
-                        if !is_static {
-                            let msg = format!("Non-'static reference arguments are not supported for Spawnable functions. Reference found in function {} at arg position {}", func_name, idx);
-                            println!("cargo:warning={}", msg);
-                            std::process::exit(1);
-                        }
+                    if is_non_static_reference(ty) {
+                        let pat = &pat_type.pat;
+                        report_error(&format!(
+                            "spawnable `{}`: argument `{}` has type `{}`, a reference without `'static` lifetime. \
+                             Spawned tasks may run on another thread, so arguments must be `Send + 'static`: \
+                             pass owned data (e.g. `Vec<T>`, `Box<T>`), share it with `Arc<T>`, or use a `&'static` reference (e.g. from `Box::leak`).",
+                            display_path, display(quote!(#pat)), display(quote!(#ty))));
                     }
                     quote!(#ty)
                 },
                 FnArg::Receiver(recv) => {
                     let selftype =  selftype.as_ref().unwrap();
                     let self_ty = syn::parse_str::<Type>(selftype).expect(&format!("Could not parse {} into a type", selftype));
-                    if recv.colon_token.is_some() {
-                        // want to full qualified type, but with actual selftype instead of 'self'
-                        let mut modified_self = *recv.ty.clone();
-                        ReplaceSelf { replacement: self_ty }.visit_type_mut(&mut modified_self);
-                        quote!(#modified_self)
-                    } else if recv.reference.is_some() {
-                        let msg = format!("Reference receivers ('&self') are not supported for Spawnable methods. Use explicit types such as Box<Self> or Arc<Self>. \n Reference receiver found in methid {}", func_name);
-                        println!("cargo:warning={}", msg);
-                        std::process::exit(1);
-                    } else {
-                        quote!(#self_ty)
+                    // syn gives shorthand receivers their full type too: `self` is `Self`, `&self` is `&Self`,
+                    // `&'static self` is `&'static Self`; typed receivers (`self: Arc<Self>`) have the written type.
+                    // so both forms get the same check, and the frame stores exactly the receiver's type.
+                    let recv_ty = &*recv.ty;
+                    if is_non_static_reference(recv_ty) {
+                        let written = if recv.colon_token.is_some() { format!("self: {}", display(quote!(#recv_ty))) } else { display(quote!(#recv)) };
+                        let method = &func_name;
+                        report_error(&format!(
+                            "spawnable method `{}` takes `{}` as receiver, a reference without `'static` lifetime. \
+                             Spawned tasks may run on another thread, so a spawnable method must own its receiver or borrow it for `'static`: \
+                             use `self: Arc<Self>` to share read-only data (call it as `x.clone().{}(..)`), `self` or `self: Box<Self>` to move it into the task, \
+                             or `&'static self` / `self: &'static Self`.",
+                            display_path, written, method));
                     }
+                    // fully qualified type, with the actual selftype instead of 'Self'
+                    let mut modified_self = recv_ty.clone();
+                    ReplaceSelf { replacement: self_ty }.visit_type_mut(&mut modified_self);
+                    quote!(#modified_self)
                 }
             }
         }).collect();
@@ -390,6 +463,24 @@ pub fn build_funcs_db(funcs: Vec<FuncMetaData> ) -> Vec<FuncEntry> {
     }
 
     database
+}
+
+// tokens as written in source, for error messages (quote's to_string separates all tokens by spaces)
+fn display(tokens: TokenStream) -> String {
+    let mut s = tokens.to_string();
+    for (spaced, tight) in [(" :: ", "::"), (" < ", "<"), ("< ", "<"), (" >", ">"), (" ,", ","), ("& ", "&"), ("' ", "'")] {
+        s = s.replace(spaced, tight);
+    }
+    s
+}
+
+// a reference type without 'static lifetime (arguments and receivers of spawnables must be 'static)
+fn is_non_static_reference(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(syn::TypeReference { lifetime, .. }) => !lifetime.as_ref().is_some_and(|lt| lt.ident == "static"),
+        Type::Paren(paren) => is_non_static_reference(&paren.elem),
+        _ => false,
+    }
 }
 
 struct ReplaceSelf {
