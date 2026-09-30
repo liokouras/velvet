@@ -9,7 +9,7 @@ Velvet is a Rust library for ergonomic, efficient **divide-and-conquer paralleli
 - **Declarative parallelism via `#[spawnable]` macro** : Annotate recursive functions with `#[spawnable]` to automatically generate parallel execution code, without manual thread management.
 - **Dynamic load balancing via work stealing**: Tasks are dynamically distributed to idle workers via work-stealing. In divide-and-conquer workloads, large tasks are created, and stolen, first, while finer-grained tasks are created later and are less likely to be stolen. This makes work-stealing especially efficient and reduces load-balancing overhead.
 - **Automatic synchronization and scheduling**: Spawned tasks are synchronized automatically; no need for manual synchronization or barriers.
-- **Configurable worker pools with thread pinning**: Control the number of worker threads and optionally pin them to specific CPU cores.
+- **Configurable worker pools**: Control the number of worker threads. Velvet does not pin threads to CPU cores; if needed, pinning can be done from outside Velvet (e.g. with `taskset` or `numactl`).
 - **Multiple work queue backends**: Three queue backends are supported: safe (default), Crossbeam, and unsafe. It is easy to experiment with diffent backends and add your own.
 - **Lightweight, compile-time code generation**: Parallelized code is generated at compile time via standard Rust features, keeping runtime overhead minimal.
 - **Shared‑memory only**: Designed for parallelism on multi-core systems; Velvet does not provide a distributed runtime (...yet!)  

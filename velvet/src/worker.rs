@@ -58,9 +58,9 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
         }
     }
 
-    /// Create num_workers-many workers, and move them into their own (pinned) thread
-    /// Returns the root worker running on current thread, and a vector of join handles for the spawned threads
-    /// TODO: parameterise pinning config
+    /// Create num_workers-many workers, and move them into their own thread
+    /// Returns the root worker running on current thread, holding the join handles of the spawned threads
+    /// (Velvet does not pin threads to cores; that can be done from outside Velvet, e.g. with taskset or numactl)
     pub fn prepare_workers(num_workers: usize, queue_size: usize, steal: fn(&mut VelvetWorker<T>)) -> Self {
         let mut workers = Vec::with_capacity(num_workers);
         let mut stealers = Vec::with_capacity(num_workers);
@@ -82,16 +82,9 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
 
         // MOVE WORKERS TO THREADS
         let mut joinhandles = Vec::with_capacity(num_workers);
-        let core_ids = core_affinity::get_core_ids().unwrap();
-        for thread_nr in 1..num_workers {
-            let id = core_ids[thread_nr];
+        for _ in 1..num_workers {
             let mut worker = workers.pop().unwrap();
             joinhandles.push(thread::spawn(move || {
-                // pin this thread to the given CPU core.
-                let res = core_affinity::set_for_current(id);
-                if !res {
-                    eprintln!("Could not pin worker thread id {:?}, continuing without pinning...", id);
-                }
                 worker.wait();
                 // a panic in a task this worker runs (or the abort after a panic elsewhere) ends up here
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -109,12 +102,6 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
         let mut root_worker = workers.pop().unwrap();
         // set handles-field
         root_worker.handles = Some(joinhandles);
-        // pin this thread to a single CPU core
-        let id = core_ids[0];
-        let res = core_affinity::set_for_current(id);
-        if !res {
-            eprintln!("Could not pin Root thread id {:?}, continuing without pinning...", id);
-        }
         root_worker
     }
 
