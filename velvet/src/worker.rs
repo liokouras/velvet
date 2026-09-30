@@ -1,15 +1,35 @@
-use std::{thread, sync::{Arc, atomic::{AtomicBool, Ordering}, Barrier}};
+use std::{any::Any, panic::{self, AssertUnwindSafe}, thread, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, Barrier}};
 use super::{queue::{Identifiable, VelvetQueue, VelvetStealer}, VelvetRng};
 #[cfg(feature = "stats")]
 use super::RuntimeStats;
 #[cfg(feature = "stats")]
 use std::time::Duration;
 
+/*
+    Panics in tasks. A task can panic on any worker, but only the root worker (the thread that called velvet_main) can
+    report it to the user, and every worker waiting for a result of the panicked task must stop waiting.
+    So a panic *aborts* the pool:
+    - a thief runs a stolen task under catch_unwind (in the generated steal function); on a panic it records the
+      payload here and sets `aborted`, releases the task's result slot, and unwinds its own stack (abort_unwind);
+    - every worker checks `aborted` when it syncs (and while waiting for a stolen result), and unwinds its stack;
+    - the root re-raises the recorded payload, so velvet_main panics with the original panic;
+    - worker threads catch the unwinding at the bottom of their steal loop, and stop.
+    (A panic on the root thread itself unwinds velvet_main directly; the root worker's Drop then aborts the pool.)
+*/
+struct AbortState {
+    aborted: AtomicBool,
+    payload: Mutex<Option<Box<dyn Any + Send>>>, // the first panic's payload, re-raised by the root
+}
+
+// payload for unwinding the stacks of the other workers after a panic (resume_unwind: not reported by the panic hook)
+struct VelvetAbort;
+
 pub struct VelvetWorker<T: Identifiable + Send + 'static>  {
     _id: usize,
     queue: Arc<VelvetQueue<T>>,
     pub stealers: Vec<VelvetStealer<T>>,
     done: Arc<AtomicBool>,
+    abort: Arc<AbortState>,
     barrier: Arc<Barrier>,
     sequence_nr: usize,
     rng: VelvetRng,
@@ -19,7 +39,7 @@ pub struct VelvetWorker<T: Identifiable + Send + 'static>  {
     stats: RuntimeStats,
 }
 impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
-    fn new(id: usize, queue_size: usize, done: Arc<AtomicBool>, barrier: Arc<Barrier>, steal: fn(&mut VelvetWorker<T>)) -> Self {
+    fn new(id: usize, queue_size: usize, done: Arc<AtomicBool>, abort: Arc<AbortState>, barrier: Arc<Barrier>, steal: fn(&mut VelvetWorker<T>)) -> Self {
         let queue = Arc::new(VelvetQueue::<T>::new(queue_size));
         let stealers = Vec::new();
         Self {
@@ -27,6 +47,7 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
             queue,
             stealers,
             done,
+            abort,
             barrier,
             sequence_nr: 0,
             rng: VelvetRng::new(),
@@ -44,9 +65,10 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
         let mut workers = Vec::with_capacity(num_workers);
         let mut stealers = Vec::with_capacity(num_workers);
         let done = Arc::from(AtomicBool::new(false));
+        let abort = Arc::new(AbortState { aborted: AtomicBool::new(false), payload: Mutex::new(None) });
         let barrier = Arc::from(Barrier::new(num_workers));
         for id in 0..num_workers {
-            workers.push(Self::new(id, queue_size, done.clone(), barrier.clone(), steal));
+            workers.push(Self::new(id, queue_size, done.clone(), abort.clone(), barrier.clone(), steal));
         }
         for worker in &workers {
             let stealer = worker.get_stealer();
@@ -71,8 +93,14 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
                     eprintln!("Could not pin worker thread id {:?}, continuing without pinning...", id);
                 }
                 worker.wait();
-                while !worker.done.load(Ordering::Relaxed) {
-                    worker.steal();
+                // a panic in a task this worker runs (or the abort after a panic elsewhere) ends up here
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+                    while !worker.done.load(Ordering::Relaxed) && !worker.is_aborted() {
+                        worker.steal();
+                    }
+                }));
+                if let Err(payload) = outcome {
+                    worker.record_panic(payload);
                 }
             }));
         }
@@ -120,7 +148,44 @@ impl <T: Identifiable + Send + 'static> VelvetWorker <T> {
 
     #[inline(always)]
     pub fn sync(&self, id: usize) -> T {
+        if self.is_aborted() { self.abort_unwind(); }
         self.queue.pop(id)
+    }
+
+    /// whether a task in this pool has panicked (see AbortState)
+    ///
+    /// Relaxed suffices: the flag is only a "stop now" hint, and correctness does not depend on its ordering.
+    /// - a thief sets it *before* releasing the result slot of the panicked task (a mutex), so an owner that
+    ///   acquires that slot is guaranteed to see it, through the mutex's own synchronisation;
+    /// - the panic payload is handed over under its own mutex.
+    /// Elsewhere (sync, the idle steal loop) seeing the flag a little late only delays stopping.
+    /// Being written at most once, the flag's cache line stays shared by all cores, so this load is a cache hit.
+    #[inline(always)]
+    pub fn is_aborted(&self) -> bool {
+        self.abort.aborted.load(Ordering::Relaxed)
+    }
+
+    /// records that running a task panicked, and aborts the pool. The first real panic's payload is kept,
+    /// for the root to re-raise; the abort-payloads of workers unwinding afterwards are not.
+    pub fn record_panic(&self, payload: Box<dyn Any + Send>) {
+        if !payload.is::<VelvetAbort>() {
+            let mut first = self.abort.payload.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if first.is_none() { *first = Some(payload); }
+        }
+        self.abort.aborted.store(true, Ordering::Release);
+    }
+
+    /// unwinds this worker's stack because a task in the pool panicked: the root re-raises the original panic
+    /// (so velvet_main panics with it); other workers unwind quietly (their threads then stop)
+    pub fn abort_unwind(&self) -> ! {
+        if self.handles.is_some() {
+            let payload = self.abort.payload.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+            match payload {
+                Some(payload) => panic::resume_unwind(payload),
+                None => panic!("velvet: a task panicked"),
+            }
+        }
+        panic::resume_unwind(Box::new(VelvetAbort))
     }
 
     #[inline(always)]
@@ -222,6 +287,10 @@ impl <T: Identifiable + Send + 'static> Drop for VelvetWorker<T> {
     fn drop(&mut self) {
         // check if i am the root
         if let Some(handles) = self.handles.take() {
+            // the root is unwinding because of a panic: stop the other workers at their next sync
+            if thread::panicking() {
+                self.abort.aborted.store(true, Ordering::Release);
+            }
             self.set_done();
             for handle in handles {
                 let _ = handle.join();

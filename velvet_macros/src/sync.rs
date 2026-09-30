@@ -652,6 +652,7 @@ fn gen_output_frame_line(sig: &syn::Signature) -> Block {
         Frame::Stolen(ptr) => {
             let mut try_lock = ptr.try_lock();
             loop {
+                if worker.is_aborted() { worker.abort_unwind(); }   // a task panicked: see VelvetWorker::record_panic
                 if let Ok(_value) = try_lock { **EITHER BREAK OR USE _value** }
                 else {
                     worker.steal();
@@ -670,6 +671,8 @@ fn gen_sync_logic(input_case: &Arm, output_case: &Block) -> Stmt {
         crate::__Frame__::Stolen(ptr) => {
             let mut try_lock = ptr.try_lock();
             loop {
+                // a task in the pool panicked (possibly the stolen one): stop waiting and unwind
+                if __worker__.is_aborted() { __worker__.abort_unwind(); }
                 if let Ok(mut _value) = try_lock #output_case 
                 else {
                     __worker__.steal();
@@ -688,6 +691,8 @@ fn gen_sync_logic(input_case: &Arm, output_case: &Block) -> Stmt {
             let mut try_lock = ptr.try_lock();
             __worker__.add_stolen_jobs(1);
             loop {
+                // a task in the pool panicked (possibly the stolen one): stop waiting and unwind
+                if __worker__.is_aborted() { __worker__.abort_unwind(); }
                 if let Ok(mut _value) = try_lock #output_case
                 else {
                     __worker__.steal();

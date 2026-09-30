@@ -112,8 +112,19 @@ pub fn generate_steal_func(funcs: &Vec<FuncEntry>) -> TokenStream {
                 let maybe_frame = stealers[n].steal(__Frame__::Stolen(result_slot.clone()));
 
                 if let Some(frame) = maybe_frame {
-                    match frame {
-                        #specific_steal_logic
+                    // run the stolen task; a panic aborts the pool (see velvet::VelvetWorker::record_panic)
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        match frame {
+                            #specific_steal_logic
+                        }
+                    }));
+                    match outcome {
+                        Ok(result) => *lock = result,
+                        Err(payload) => {
+                            worker.record_panic(payload);
+                            drop(lock); // release the result slot (the owner sees the abort, not a poisoned lock)
+                            worker.abort_unwind();
+                        }
                     }
                     return;
                 }
@@ -134,8 +145,19 @@ pub fn generate_steal_func(funcs: &Vec<FuncEntry>) -> TokenStream {
                 let maybe_frame = stealers[n].steal(__Frame__::Stolen(result_slot.clone()));
 
                 if let Some(frame) = maybe_frame {
-                    match frame {
-                        #specific_steal_logic
+                    // run the stolen task; a panic aborts the pool (see velvet::VelvetWorker::record_panic)
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        match frame {
+                            #specific_steal_logic
+                        }
+                    }));
+                    match outcome {
+                        Ok(result) => *lock = result,
+                        Err(payload) => {
+                            worker.record_panic(payload);
+                            drop(lock); // release the result slot (the owner sees the abort, not a poisoned lock)
+                            worker.abort_unwind();
+                        }
                     }
                     worker.add_successful_steals(1);
                     return;
@@ -152,7 +174,7 @@ pub fn generate_steal_func(funcs: &Vec<FuncEntry>) -> TokenStream {
             for every function in funcs, have a match arm for Frame::FrameFunc(args...)
             and the logic to execute, namely calling the corresponding function with the arguments
             (in case of the augmented 'self' arg, add it as a reference to the Arc)
-            and sending back the done-signal with return value (if any)
+            and evaluating to the content of the result slot: Some(Output..(result)) or None (void functions)
 */ 
 fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
     let mut match_statements = Vec::new();
@@ -170,10 +192,10 @@ fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
         if let Some(_) = &func.ret {
             let res_frame = syn::Ident::new(&format!("Output{}", pascal_func), func_name.span());
             ret_variable = quote!(let result = );
-            done = quote!(*lock = Some(__Frame__::#res_frame(result)));
+            done = quote!(Some(__Frame__::#res_frame(result)));
         } else {
             ret_variable = quote!();
-            done = quote!(*lock = None);
+            done = quote!(None);
         }
 
         if !func.args.is_empty() {
@@ -193,7 +215,7 @@ fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
                 let stmt = quote! {
                     __Frame__::#frame_name(_, a0, #frame_args_pattern) => {
                         #ret_variable #selftype.#func_name(worker, #func_args_pattern);
-                        #done;
+                        #done
                     }
                 };
                 match_statements.push(stmt);
@@ -211,7 +233,7 @@ fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
                 let stmt = quote! {
                     __Frame__::#frame_name(_, #frame_args_pattern) => {
                         #ret_variable #func_path(worker, #func_args_pattern);
-                        #done;
+                        #done
                     },
                 };
                 match_statements.push(stmt);
@@ -220,7 +242,7 @@ fn generate_steal_logic(funcs: &Vec<FuncEntry>) -> TokenStream {
             let stmt = quote! (
                 __Frame__::#frame_name(_) => {
                     #ret_variable #func_path(worker);
-                    #done;
+                    #done
                 }
             );
             match_statements.push(stmt);
